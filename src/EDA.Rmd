@@ -1,0 +1,187 @@
+---
+title: "Venezia High Waters EDA"
+author: "Luis Bronchal"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+### Summary 
+
+This is a first Exploratory Data Analisys for the aggregated data of Venezia High Waters.
+Original data come from [Centro Previsioni e Segnalazioni Maree](http://www.comune.venezia.it/archivio/25419)
+
+### Checking the data 
+
+```{r, message=FALSE, warning=FALSE}
+library(TSA)
+library(xts)
+library(lubridate)
+library(ggplot2)
+library(forecast)
+library(readr)
+library(dplyr)
+library(tidyr)
+```
+
+We load the data and check the its quality
+
+```{r}
+data <- read_csv(file = "../output/venezia.csv",
+                 col_types = cols_only(col_datetime(), col_number()))
+
+data_xts <- xts(order.by=data$datetime,
+                      x=data$level)
+attr(data_xts, 'frequency') <- 24
+```
+
+```{r}
+first(data_xts)
+end(data_xts)
+```
+
+There are not any NA values:
+```{r}
+anyNA(data_xts)
+```
+
+We look if there are duplicated:
+
+```{r}
+dup <- duplicated(index(data_xts), fromLast=TRUE)
+sum(dup)
+```
+
+We look what the duplicated values are:
+
+```{r}
+data_xts[index(data_xts[dup,])]
+```
+
+We conserve only the first time a duplicated register was taken:
+```{r}
+data_xts <- data_xts[!dup]
+```
+
+We look for holes in the data
+```{r}
+data_xts_index <- index(data_xts)
+all_points <- seq(first(data_xts_index), last(data_xts_index), by="hour") 
+
+# it looks like there are holes in the data
+length(all_points) == length(index(data_xts))
+
+# we complete the holes with the previous observation value
+venezia_xts <- xts(order.by=all_points)
+venezia_xts <- merge(data_xts, venezia_xts, join = "right")
+venezia_xts <- na.locf(venezia_xts)
+length(all_points) == length(index(venezia_xts))
+```
+
+### Exploratory Data Analysis
+
+The historical minimum and maximum level:
+```{r}
+range(venezia_xts)
+```
+
+The mean level:
+```{r}
+mean(venezia_xts)
+```
+
+We take a look to some graphs
+```{r}
+boxplot(coredata(venezia_xts))
+```
+
+To plot all the data is confusing
+```{r}
+ts.plot(venezia_xts)
+```
+
+Let's see one month:
+```{r}
+ts.plot(venezia_xts["2015-01"])
+```
+
+
+```{r}
+
+
+# compute the Fourier Transform
+p <- periodogram(venezia_xts)
+dd <- data.frame(freq=p$freq, spec=p$spec, time=1/p$freq)
+order <- dd[order(-dd$spec),]
+top10 <- head(order, 10)
+top10
+
+# references:
+# https://anomaly.io/detect-seasonality-using-fourier-transform-r/
+# http://rpubs.com/sinhrks/plot_tsstats
+#
+
+```
+
+The main frequencies are around each 12 and 24 hours.
+
+
+```{r}
+data2 <- as.data.frame(venezia_xts)
+data2$datetime <- rownames(data2)
+rownames(data2) <- NULL
+names(data2) <- c("level", "datetime")
+
+data2$year <- year(data2$datetime)
+data2$month <- month(data2$datetime)
+data2$day <- day(data2$datetime)
+data2$weekday <- factor(wday(data2$datetime), levels=1:7, labels=c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday" , "Saturday", "Sunday"))
+data2$hour <- hour(data2$datetime)
+data2 <- data2[c("datetime", "year", "month", "day", "weekday", "level")]
+```
+
+We remove 2016 data because it has only 1 observation (first hour of the first day)
+```{r}
+data2 <- data2 %>% filter(year<2016)
+```
+
+We see the variation of the water levels through years. It looks like there are some kind of oscilation where some years have higher levels 
+```{r}
+# per year
+ggplot(data2, aes(x=year, y=level, group=year, col=factor(year))) + geom_boxplot() 
+```
+
+If we look it monthly, it looks like the months with low level are January, February and March
+```{r}
+# per month
+ggplot(data2, aes(x=as.factor(month), y=level, group=month, col=as.factor(month))) + geom_boxplot() + scale_color_discrete("month", labels=month.abb) +
+  scale_x_discrete("month", labels=month.abb)
+```
+
+It looks like there are not great variations if we consider the day of the week:
+
+```{r}
+# per weekday
+ggplot(data2, aes(x=weekday, y=level, group=weekday, col=weekday)) + geom_boxplot()
+```
+
+```{r}
+data_yearly <- data2 %>% group_by(year) %>% 
+  summarise(max=max(level), min=min(level), mean=mean(level)) %>% 
+  gather(key, value, -year)
+```
+
+It looks like there is an increase in the mean level year after year:
+```{r}
+data_yearly %>% ggplot(aes(x=year, y=value, fill=as.factor(key))) + geom_bar(stat="identity") +
+  scale_fill_discrete("Water level") + scale_y_continuous("level")
+```
+
+If we calculate linear regresion it looks like there is an increase in the max and min level also year after year.
+```{r}
+data_yearly %>% ggplot(aes(x=year, y=value, col=as.factor(key))) + geom_point() + 
+  geom_smooth(method="lm") + scale_color_discrete("Water level") + 
+  scale_y_continuous("level")
+```
+
